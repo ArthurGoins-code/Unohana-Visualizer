@@ -85,6 +85,13 @@ class BloodVisualizerWindow(QWidget):
         x_range = self._cfg.get("x_range", [0.061, 0.97])
         self._x0, self._x1 = x_range[0] * w, x_range[1] * w
 
+        # Parsed once here rather than on every paintEvent -- these never
+        # change after startup, so re-parsing the config strings ~30x/sec
+        # would be pure waste.
+        self._top_c = parse_color(self._cfg.get("color_top", "#ff4d3d"))
+        self._mid_c = parse_color(self._cfg.get("color_mid", "#c40e0e"))
+        self._tip_c = parse_color(self._cfg.get("color_tip", "#5c0000"))
+
         # Deterministic per-drip jitter (x offset / width / satellite drips)
         # so they look organically irregular but never "jump" between
         # frames -- only their length reacts to audio.
@@ -123,9 +130,7 @@ class BloodVisualizerWindow(QWidget):
             return
         slot = width / n
 
-        top_c = parse_color(self._cfg.get("color_top", "#ff4d3d"))
-        mid_c = parse_color(self._cfg.get("color_mid", "#c40e0e"))
-        tip_c = parse_color(self._cfg.get("color_tip", "#5c0000"))
+        top_c, mid_c, tip_c = self._top_c, self._mid_c, self._tip_c
 
         for i, level in enumerate(levels):
             jitter = self._jitter[i]
