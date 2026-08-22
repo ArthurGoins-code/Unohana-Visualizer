@@ -1,0 +1,11 @@
+# Python bytecode / caches
+__pycache__/
+*.py[cod]
+
+# Local virtualenv (install.sh recreates it)
+.venv/
+
+# Editor / OS noise
+*.swp
+*~
+.DS_Store
