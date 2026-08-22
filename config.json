@@ -12,7 +12,7 @@
     "baseline_fraction": 0.60,
     "base_height_fraction": 0.006,
     "max_height_fraction": 0.30,
-    "x_range": [0.03, 0.97],
+    "x_range": [0.4, 0.97],
     "color_top": "#5c0000",
     "color_mid": "#c40e0e",
     "color_tip": "#ff4d3d"

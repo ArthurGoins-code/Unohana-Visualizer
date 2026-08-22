@@ -12,7 +12,10 @@ one 1920x1080 screen on Linux (PulseAudio/PipeWire + X11/Qt).
   leaves a faint wet sheen along the blade; loud passages make the drips
   longer, brighter, and glowing. It is frameless, click-through, stays
   below every normal window, and never shows up in the taskbar/alt-tab —
-  it just sits over the desktop like wallpaper.
+  it just sits over the desktop like wallpaper. It is also marked
+  **sticky** (EWMH `_NET_WM_STATE_STICKY`, set via `x11_utils.py`), so it
+  appears on *every* workspace/desktop, matching the shared wallpaper —
+  not only the one it was started on.
 - `audio_visualizer.py` taps the current output device's loopback
   "monitor" source (via `soundcard`), so the drips react to *whatever you
   are hearing* — music, games, video — with no microphone involved.
