@@ -19,7 +19,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from blood_visualizer import BloodVisualizerWindow
-from x11_utils import make_window_sticky
+from desktop_utils import UNSUPPORTED_HINT, pin_overlay_window
 
 
 def _load_config(config_path: str) -> dict:
@@ -64,26 +64,28 @@ def main():
         blood = BloodVisualizerWindow(config, audio_reader)
         blood.show()
 
-        # The overlay must be visible on *every* workspace, not just the one
-        # it was created on (the wallpaper it decorates is shared across all
-        # of them). Qt has no API for the EWMH "sticky" state, so we set it
-        # straight through libxcb (see `x11_utils.py`). Re-assert every few
-        # seconds in case the WM resets window states when it relayouts.
-        sticky_failed = False
+        # The overlay must keep its wallpaper-like behavior on *every*
+        # workspace/virtual desktop, not just the one it was created on
+        # (the wallpaper it decorates is shared across all of them). That
+        # needs platform-specific calls Qt doesn't expose: the EWMH sticky
+        # hint on X11, Win32 style/Z-order fixups on Windows (see
+        # `desktop_utils.py`). Re-assert every few seconds in case the
+        # window manager/shell resets window states when it relayouts.
+        pin_failed = False
 
-        def _apply_sticky():
-            nonlocal sticky_failed
-            if not make_window_sticky(blood.winId()) and not sticky_failed:
-                sticky_failed = True
+        def _apply_pin():
+            nonlocal pin_failed
+            if not pin_overlay_window(blood.winId()) and not pin_failed:
+                pin_failed = True
                 print(
-                    "warning: could not set the sticky hint "
-                    "(no X11/libxcb?) -- the overlay may only appear on "
+                    "warning: could not pin the overlay to all desktops "
+                    f"({UNSUPPORTED_HINT}) -- it may only appear on "
                     "the workspace it was started on", file=sys.stderr)
 
-        _apply_sticky()
-        sticky_timer = QTimer()
-        sticky_timer.timeout.connect(_apply_sticky)
-        sticky_timer.start(5000)
+        _apply_pin()
+        pin_timer = QTimer()
+        pin_timer.timeout.connect(_apply_pin)
+        pin_timer.start(5000)
 
     # Optional headless smoke-test: UNOHANA_AUTOSTOP_MS=2000 makes the app
     # quit by itself after 2000 ms (useful for verifying startup offscreen).

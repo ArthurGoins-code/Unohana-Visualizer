@@ -1,9 +1,10 @@
 PySide6>=6.5
 
-# Audio-reactive bars: taps the current output device via the
-# PulseAudio/PipeWire "monitor" source. Needs the system `libpulse` (already
-# present on any PipeWire/PulseAudio desktop) and `numpy`; `soundcard` is
-# the backend client. Without these, the drips simply stay at their quiet
-# idle length (no crash).
+# Audio-reactive bars: taps the current output device's loopback source.
+# `soundcard` is the backend client -- it uses WASAPI loopback on Windows
+# (nothing extra to install) and PulseAudio/PipeWire on Linux (needs the
+# system `libpulse`, already present on any such desktop). `numpy` does the
+# FFT. Without these, the drips simply stay at their quiet idle length
+# (no crash).
 numpy>=1.24
 soundcard>=0.4.1

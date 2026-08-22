@@ -1,11 +1,12 @@
 """
 Audio level reader for the window's music-visualization bars.
 
-Taps the *current output device* (the default PulseAudio/PipeWire sink)
-through its loopback "monitor" source, so the levels always track what the
-user is actually hearing -- whatever application is playing, on whichever
-speaker is active. Built on `soundcard` (PulseAudio backend), which only
-needs the system `libpulse` that any PipeWire/PulseAudio desktop already has.
+Taps the *current output device* through its loopback source, so the levels
+always track what the user is actually hearing -- whatever application is
+playing, on whichever speaker is active. Built on `soundcard`, which uses
+WASAPI loopback on Windows (nothing extra to install) and the
+PulseAudio/PipeWire monitor source on Linux (only needs the system
+`libpulse` that any PipeWire/PulseAudio desktop already has).
 
 Design
 ------
@@ -16,11 +17,13 @@ Design
   log-spaced FFT spectrum over the most recent samples, applies a fast-attack
   / slow-release envelope, and returns ``n_bands`` values in ``0..1``.
 
-Everything degrades gracefully: if `soundcard`/`libpulse` are missing, there
-is no monitor source, or the audio stack is down, `get_levels()` simply
-returns zeros and the bars stay flat instead of crashing the monitor.
+Everything degrades gracefully: if `soundcard` (or, on Linux, `libpulse`) is
+missing, there is no loopback source, or the audio stack is down,
+`get_levels()` simply returns zeros and the bars stay flat instead of
+crashing the monitor.
 """
 
+import sys
 import threading
 from collections import deque
 
@@ -48,6 +51,8 @@ def _is_loopback(mic) -> bool:
         return bool(mic.isloopback)
     except Exception:
         try:
+            # Fallback for backends without the flag: PulseAudio/PipeWire
+            # names its loopback sources "<sink>.monitor".
             return "monitor" in (mic.name or "").lower()
         except Exception:
             return False
@@ -64,13 +69,29 @@ def _find_named(source: str):
 
 
 def _find_monitor():
-    """Pick the loopback monitor that backs the *default* speaker.
+    """Pick the loopback source that backs the *default* speaker.
 
-    Falls back to the first available monitor, so "whatever the user is
-    hearing" is captured even if the default-speaker name match fails.
+    On Windows this is the WASAPI loopback of the default playback device;
+    on Linux it is the PulseAudio/PipeWire "<sink>.monitor" source. Falls
+    back to the first available loopback, so "whatever the user is hearing"
+    is captured even if the default-speaker name match fails.
     """
     if not _SC_AVAILABLE:
         return None
+
+    default_name = ""
+    try:
+        default_name = _sc.default_speaker().name or ""
+    except Exception:
+        default_name = ""
+
+    # Windows/WASAPI exposes the loopback under the *speaker's* own name, so
+    # asking for it directly is both the fastest and the most reliable path.
+    if default_name and sys.platform.startswith("win"):
+        mic = _find_named(default_name)
+        if mic is not None:
+            return mic
+
     try:
         mics = _sc.all_microphones(include_loopback=True)
     except Exception:
@@ -79,12 +100,6 @@ def _find_monitor():
     loopbacks = [m for m in mics if _is_loopback(m)]
     if not loopbacks:
         return None
-
-    default_name = ""
-    try:
-        default_name = _sc.default_speaker().name or ""
-    except Exception:
-        default_name = ""
 
     if default_name:
         for m in loopbacks:
@@ -112,6 +127,11 @@ class AudioLevelReader:
         self._lock = threading.Lock()
         self._buf = deque()
         self._smooth_states = {}
+        # FFT analysis window and log-spaced band-index mapping only depend
+        # on the sample count / n_bands (not on the audio itself), so they're
+        # cached instead of rebuilt on every get_levels() call (~30 fps).
+        self._window_cache = {}
+        self._band_cache = {}
         self._stop = threading.Event()
         self._thread = None
 
@@ -205,15 +225,23 @@ class AudioLevelReader:
         if data.size < _FFT_SIZE:
             data = np.pad(data, (_FFT_SIZE - data.size, 0), mode="constant")
 
-        window = np.hanning(data.size)
+        window = self._window_cache.get(data.size)
+        if window is None:
+            window = np.hanning(data.size)
+            self._window_cache[data.size] = window
         spectrum = np.abs(np.fft.rfft(data * window))
         freqs = np.fft.rfftfreq(data.size, d=1.0 / self.sample_rate)
 
         # Log-spaced band edges -> assign every FFT bin to a band, take the
         # peak amplitude per band (classic spectrum-visualiser look).
         f_max = min(_F_MAX, self.sample_rate / 2.0)
-        edges = np.logspace(np.log10(_F_MIN), np.log10(f_max), n_bands + 1)
-        idx = np.clip(np.searchsorted(edges, freqs, side="right") - 1, 0, n_bands - 1)
+        cached = self._band_cache.get(n_bands)
+        if cached is not None and cached[0] == freqs.size:
+            idx = cached[1]
+        else:
+            edges = np.logspace(np.log10(_F_MIN), np.log10(f_max), n_bands + 1)
+            idx = np.clip(np.searchsorted(edges, freqs, side="right") - 1, 0, n_bands - 1)
+            self._band_cache[n_bands] = (freqs.size, idx)
         peak = np.zeros(n_bands, dtype=np.float32)
         np.maximum.at(peak, idx, spectrum)
 

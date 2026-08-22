@@ -18,6 +18,10 @@ import ctypes
 import ctypes.util
 import struct
 
+_libc = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6")
+_libc.free.argtypes = [ctypes.c_void_p]
+_libc.free.restype = None
+
 
 class _InternAtomCookie(ctypes.Structure):
     _fields_ = [("sequence", ctypes.c_uint32), ("length", ctypes.c_uint16)]
@@ -63,7 +67,40 @@ def _load_xcb():
         ctypes.c_void_p, ctypes.c_uint8, ctypes.c_uint32, ctypes.c_uint32,
         ctypes.c_char_p]
     lib.xcb_flush.argtypes = [ctypes.c_void_p]
+    lib.xcb_connection_has_error.argtypes = [ctypes.c_void_p]
+    lib.xcb_connection_has_error.restype = ctypes.c_int
     return lib
+
+
+# `make_window_sticky()` is called every few seconds for the life of the
+# process (see main.py), so the xcb connection and interned atoms are cached
+# here instead of reconnecting to the X server and re-interning the same
+# atom names on every single call.
+_cache = {"lib": None, "conn": None, "atoms": {}}
+
+
+def _get_connection():
+    """Return a cached (lib, conn) pair, reconnecting if the previous
+    connection is gone (e.g. the X server or WM restarted)."""
+    lib = _cache["lib"] or _load_xcb()
+    conn = _cache["conn"]
+    if conn:
+        try:
+            if lib.xcb_connection_has_error(conn):
+                lib.xcb_disconnect(conn)
+                conn = None
+        except Exception:
+            conn = None
+    if not conn:
+        screen = ctypes.c_int()
+        conn = lib.xcb_connect(None, ctypes.byref(screen))
+        if not conn:
+            conn = None
+        else:
+            _cache["atoms"] = {}  # atoms are per-connection; drop the stale cache
+    _cache["lib"] = lib
+    _cache["conn"] = conn
+    return lib, conn
 
 
 def make_window_sticky(window_id: int) -> bool:
@@ -80,20 +117,26 @@ def make_window_sticky(window_id: int) -> bool:
             traceback.print_exception(type(exc), exc, exc.__traceback__)
 
     try:
-        lib = _load_xcb()
-        screen = ctypes.c_int()
-        conn = lib.xcb_connect(None, ctypes.byref(screen))
+        lib, conn = _get_connection()
     except OSError:
         return False
     if not conn:
         return False
     try:
         def atom(name: str) -> int:
+            cached = _cache["atoms"].get(name)
+            if cached is not None:
+                return cached
             cookie = lib.xcb_intern_atom(conn, 0, len(name), name.encode("ascii"))
             ptr = lib.xcb_intern_atom_reply(conn, cookie, None)
             if not ptr:
                 return 0
-            return ctypes.cast(ptr, ctypes.POINTER(_InternAtomReply)).contents.atom
+            # xcb_*_reply() malloc()s the reply; it must be freed once we're
+            # done reading it or every periodic call leaks memory.
+            value = ctypes.cast(ptr, ctypes.POINTER(_InternAtomReply)).contents.atom
+            _libc.free(ptr)
+            _cache["atoms"][name] = value
+            return value
 
         def set_property(property_atom: int, value: bytes) -> None:
             buf = ctypes.create_string_buffer(value, len(value))
@@ -138,6 +181,11 @@ def make_window_sticky(window_id: int) -> bool:
         return True
     except Exception as exc:  # noqa: BLE001 - report, then fail soft
         _debug(exc)
+        # The connection may be in a bad state; drop the cache so the next
+        # call reconnects from scratch instead of repeating the same error.
+        _cache["conn"] = None
+        try:
+            lib.xcb_disconnect(conn)
+        except Exception:
+            pass
         return False
-    finally:
-        lib.xcb_disconnect(conn)
